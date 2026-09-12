@@ -34,11 +34,18 @@ function tomorrowDate() {
 }
 
 export default function ReminderEditorScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const params = useLocalSearchParams<{
+    id?: string;
+    label?: string;
+    eventName?: string;
+    date?: string;
+    notes?: string;
+  }>();
+  const { id } = params;
   const { isReady, findReminder } = useCalendar();
   const reminder = typeof id === 'string' ? findReminder(id) : undefined;
   if (!isReady) return <EditorLoading />;
-  return <ReminderForm initial={reminder} />;
+  return <ReminderForm initial={reminder} proposal={reminder ? undefined : params} />;
 }
 
 function EditorLoading() {
@@ -51,17 +58,25 @@ function EditorLoading() {
   );
 }
 
-function ReminderForm({ initial }: { initial?: DateReminder }) {
+function ReminderForm({
+  initial,
+  proposal,
+}: {
+  initial?: DateReminder;
+  proposal?: { label?: string; eventName?: string; date?: string; notes?: string };
+}) {
   const router = useRouter();
   const { settings } = useApp();
   const { saveReminder } = useCalendar();
   const colors = useColors(settings.appearance);
-  const [label, setLabel] = useState(initial?.label ?? '');
-  const [eventName, setEventName] = useState(initial?.eventName ?? '');
-  const [date, setDate] = useState(initial?.date ?? tomorrowDate());
+  const [label, setLabel] = useState(initial?.label ?? proposal?.label ?? '');
+  const [eventName, setEventName] = useState(
+    initial?.eventName ?? proposal?.eventName ?? '',
+  );
+  const [date, setDate] = useState(initial?.date ?? proposal?.date ?? tomorrowDate());
   const [hasTime, setHasTime] = useState(initial?.time !== null);
   const [time, setTime] = useState(initial?.time ?? '09:00');
-  const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [notes, setNotes] = useState(initial?.notes ?? proposal?.notes ?? '');
   const [repeatsAnnually, setRepeatsAnnually] = useState(
     initial?.repeatsAnnually ?? false,
   );
@@ -164,7 +179,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
       >
         <View style={styles.intro}>
           <Text style={[styles.eyebrow, { color: colors.primary }]}>
-            WHO & WHAT
+            Who & what
           </Text>
           <Text style={[styles.pageTitle, { color: colors.foreground }]}>
             Keep the date close.
@@ -187,7 +202,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
         )}
 
         <Text style={[styles.label, { color: colors.mutedForeground }]}>
-          PERSON OR LABEL
+          Person or label
         </Text>
         <TextInput
           testID="reminder-label"
@@ -207,7 +222,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
         />
 
         <Text style={[styles.label, { color: colors.mutedForeground }]}>
-          EVENT
+          Event
         </Text>
         <TextInput
           testID="reminder-event"
@@ -229,7 +244,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
         <View style={styles.twoColumns}>
           <View style={styles.column}>
             <Text style={[styles.label, { color: colors.mutedForeground }]}>
-              DATE
+              Date
             </Text>
             <TextInput
               testID="reminder-date"
@@ -252,7 +267,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
           <View style={styles.timeColumn}>
             <View style={styles.inlineLabel}>
               <Text style={[styles.label, { color: colors.mutedForeground }]}>
-                TIME
+                Time
               </Text>
               <Switch
                 testID="reminder-has-time"
@@ -323,7 +338,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
         </View>
 
         <Text style={[styles.label, { color: colors.mutedForeground }]}>
-          REMIND ME
+          Remind me
         </Text>
         <View style={[styles.timingGrid, { backgroundColor: colors.secondary }]}>
           {timingOptions.map((option) => {
@@ -361,7 +376,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
         </View>
 
         <Text style={[styles.label, { color: colors.mutedForeground }]}>
-          NOTES · OPTIONAL
+          Notes (optional)
         </Text>
         <TextInput
           testID="reminder-notes"
@@ -388,7 +403,7 @@ function ReminderForm({ initial }: { initial?: DateReminder }) {
           <Text
             style={[styles.privacyText, { color: colors.accentForeground }]}
           >
-            The date stays in Second Brain. Android only receives the alert
+            The date stays in Demi. Android only receives the alert
             needed to notify you.
           </Text>
         </View>
@@ -426,9 +441,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerCopy: { flex: 1, alignItems: 'center', marginHorizontal: 10 },
-  headerTitle: { fontFamily: 'Rubik_600SemiBold', fontSize: 17 },
+  headerTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 17 },
   headerSubtitle: {
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 10,
     marginTop: 2,
   },
@@ -443,20 +458,20 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 20, paddingBottom: 30 },
   intro: { paddingTop: 14, paddingBottom: 24 },
   eyebrow: {
-    fontFamily: 'Rubik_700Bold',
+    fontFamily: 'SpaceGrotesk_700Bold',
     fontSize: 10,
     letterSpacing: 1.4,
     marginBottom: 9,
   },
   pageTitle: {
-    fontFamily: 'Rubik_600SemiBold',
+    fontFamily: 'SpaceGrotesk_600SemiBold',
     fontSize: 30,
     lineHeight: 36,
     letterSpacing: -1,
     marginBottom: 8,
   },
   pageBody: {
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 13,
     lineHeight: 20,
   },
@@ -470,12 +485,12 @@ const styles = StyleSheet.create({
   },
   errorText: {
     flex: 1,
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 11,
     lineHeight: 16,
   },
   label: {
-    fontFamily: 'Rubik_700Bold',
+    fontFamily: 'SpaceGrotesk_700Bold',
     fontSize: 9,
     letterSpacing: 1.1,
     marginBottom: 7,
@@ -485,7 +500,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 14,
     paddingHorizontal: 13,
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     marginBottom: 17,
   },
@@ -501,7 +516,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   hint: {
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 10,
     marginTop: -10,
     marginBottom: 18,
@@ -524,9 +539,9 @@ const styles = StyleSheet.create({
     marginRight: 11,
   },
   optionCopy: { flex: 1 },
-  optionTitle: { fontFamily: 'Rubik_600SemiBold', fontSize: 13 },
+  optionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 13 },
   optionDescription: {
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 10,
     marginTop: 3,
   },
@@ -545,7 +560,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'center',
   },
-  timingText: { fontFamily: 'Rubik_500Medium', fontSize: 10 },
+  timingText: { fontFamily: 'Inter_500Medium', fontSize: 10 },
   privacyCard: {
     borderRadius: 13,
     padding: 11,
@@ -556,7 +571,7 @@ const styles = StyleSheet.create({
   },
   privacyText: {
     flex: 1,
-    fontFamily: 'Rubik_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 10,
     lineHeight: 15,
   },
@@ -566,7 +581,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  saveButtonText: { fontFamily: 'Rubik_600SemiBold', fontSize: 13 },
+  saveButtonText: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 13 },
   disabled: { opacity: 0.45 },
   pressed: { opacity: 0.74, transform: [{ scale: 0.98 }] },
 });
