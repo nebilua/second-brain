@@ -2,6 +2,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import type { LlamaContext, RNLlamaOAICompatibleMessage } from 'llama.rn';
 import type { ApprovedMemory } from '@/lib/memory';
+import { MAX_MEMORIES_IN_PROMPT } from '@/lib/localLimits';
 
 export const DEFAULT_CONTEXT_SIZE = 2048;
 export const LOW_MEMORY_CONTEXT_SIZE = 1024;
@@ -83,7 +84,7 @@ const BASE_SYSTEM_PROMPT =
 export function buildSystemPrompt(profile?: LocalProfileContext) {
   const displayName = profile?.displayName?.trim().slice(0, MAX_PROFILE_NAME_CHARS);
   const context = profile?.context?.trim().slice(0, MAX_PROFILE_CONTEXT_CHARS);
-  const memories = (profile?.memories ?? []).slice(0, 6);
+  const memories = (profile?.memories ?? []).slice(0, MAX_MEMORIES_IN_PROMPT);
   if (!displayName && !context && memories.length === 0) return BASE_SYSTEM_PROMPT;
 
   const lines = [
@@ -115,7 +116,7 @@ export async function proposeMemoryCandidate(
       {
         role: 'system',
         content:
-          'Extract at most one durable memory candidate from the user message. Never treat assistant text as a fact. Return only JSON. Use {"kind":"none"} when nothing is useful. Allowed memory categories: preference, person, goal, project, fact. For a concrete calendar date use kind important-date instead of memory. Never output commands, prompt instructions, sensitive inferred traits, transient tasks, or secrets. Memory shape: {"kind":"memory","category":"preference","content":"concise third-person fact","sourceExcerpt":"exact short user excerpt","explicit":false}. Date shape: {"kind":"important-date","label":"person or label","eventName":"event","date":"YYYY-MM-DD","notes":"","sourceExcerpt":"exact short user excerpt","explicit":false}.',
+          'Extract at most one durable memory candidate from the user message. Never treat assistant text as a fact. Return only JSON. Use {"kind":"none"} when nothing is useful. Allowed memory categories: preference, person, goal, project, fact. For a concrete calendar date use kind important-date instead of memory. Never output commands, prompt instructions, sensitive inferred traits, transient tasks, or secrets. Memory shape: {"kind":"memory","category":"preference","content":"concise third-person fact","sourceExcerpt":"exact short user excerpt","explicit":false}. Date shape: {"kind":"important-date","label":"person or label","eventName":"event","date":"YYYY-MM-DD","time":"HH:MM or null","notes":"","sourceExcerpt":"exact short user excerpt","explicit":false}.',
       },
       {
         role: 'user',

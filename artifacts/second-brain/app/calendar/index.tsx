@@ -34,7 +34,23 @@ function daysUntil(reminder: DateReminder) {
   const days = Math.round((eventDay.getTime() - today.getTime()) / 86_400_000);
   if (days === 0) return 'TODAY';
   if (days === 1) return 'TOMORROW';
+  if (days < 0) return 'PAST';
   return `IN ${days} DAYS`;
+}
+
+function notificationStatusLabel(reminder: DateReminder) {
+  switch (reminder.notificationState) {
+    case 'scheduled':
+      return timingLabel(reminder.remindMinutesBefore);
+    case 'permission-denied':
+      return 'Notifications are off. Open Android settings, then retry.';
+    case 'past':
+      return 'This one-time reminder is past. Edit the date to schedule a new alert.';
+    case 'unavailable':
+      return 'Device notifications are unavailable in this preview.';
+    default:
+      return reminder.notificationError ?? 'Alert could not be scheduled. Tap Retry.';
+  }
 }
 
 export default function CalendarScreen() {
@@ -45,11 +61,13 @@ export default function CalendarScreen() {
     isReady,
     error,
     deleteReminder,
+    retryReminderNotification,
     dismissError,
   } = useCalendar();
   const colors = useColors(settings.appearance);
   const [deleteTarget, setDeleteTarget] = useState<DateReminder | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const hasDeniedAlerts = upcomingReminders.some(
     (item) => item.notificationState === 'permission-denied',
   );
@@ -62,6 +80,18 @@ export default function CalendarScreen() {
       setDeleteTarget(null);
     } finally {
       setIsDeleting(false);
+    }
+  }
+
+  async function retryNotification(id: string) {
+    if (retryingId) return;
+    setRetryingId(id);
+    try {
+      await retryReminderNotification(id);
+    } catch {
+      // CalendarContext exposes the actionable failure banner.
+    } finally {
+      setRetryingId(null);
     }
   }
 
@@ -306,10 +336,22 @@ export default function CalendarScreen() {
                     { color: colors.mutedForeground },
                   ]}
                 >
-                  {item.notificationState === 'scheduled'
-                    ? timingLabel(item.remindMinutesBefore)
-                    : item.notificationError ?? 'Device alert not scheduled'}
+                  {notificationStatusLabel(item)}
                 </Text>
+                {item.notificationState !== 'scheduled' &&
+                  item.notificationState !== 'past' &&
+                  item.notificationState !== 'unavailable' && (
+                  <Pressable
+                    testID={`retry-notification-${item.id}`}
+                    accessibilityRole="button"
+                    onPress={() => void retryNotification(item.id)}
+                    disabled={retryingId !== null}
+                  >
+                    <Text style={[styles.retryText, { color: colors.primary }]}>
+                      {retryingId === item.id ? 'Retrying…' : 'Retry'}
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             </View>
           )}
@@ -347,8 +389,8 @@ export default function CalendarScreen() {
                       { color: colors.secondaryForeground },
                     ]}
                   >
-                    Alerts are off. Open device settings, then save the date
-                    again to schedule it.
+                    Alerts are off. Open device settings, then tap Retry on
+                    each affected date to schedule its alert.
                   </Text>
                   <Feather
                     name="external-link"
@@ -640,6 +682,7 @@ const styles = StyleSheet.create({
     fontSize: 9,
     lineHeight: 13,
   },
+  retryText: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 11, padding: 4 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.66)',

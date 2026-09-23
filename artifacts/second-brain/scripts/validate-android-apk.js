@@ -24,18 +24,60 @@ const defaultApkPath = path.join(
   'app-release.apk',
 );
 
-const documentedSdkPath =
-  '/nix/store/rcpalf7dyjk0bz0ly2j6lkf51b89ramk-androidsdk/libexec/android-sdk';
-const packageName = 'com.secondbrain.localassistant';
+const expectedNdkVersion = '27.1.12297006';
+const expectedPlatform = 'android-35';
 const requiredPermissions = [
   'android.permission.RECORD_AUDIO',
   'android.permission.POST_NOTIFICATIONS',
 ];
 const requiredNativeEntries = ['lib/arm64-v8a/librnllama.so'];
+const requiredNativeClassFragments = [
+  {
+    label: 'offline TTS module',
+    fragment: 'com/secondbrain/offlinetts/SecondBrainOfflineTtsModule',
+  },
+  {
+    label: 'offline speech recognition module',
+    fragment: 'expo/modules/speechrecognition/ExpoSpeechRecognitionModule',
+  },
+];
+const maxDexBytes = 64 * 1024 * 1024;
 
 function fail(message) {
   console.error(`\nAPK validation failed: ${message}`);
   process.exit(1);
+}
+
+function readReleaseIdentity() {
+  const appConfigPath = path.join(projectDir, 'app.json');
+  let appConfig;
+  try {
+    appConfig = JSON.parse(fs.readFileSync(appConfigPath, 'utf8'));
+  } catch (error) {
+    fail(`could not read release identity from ${appConfigPath}: ${error.message}`);
+  }
+
+  const expo = appConfig?.expo;
+  const packageName = expo?.android?.package;
+  const expectedVersionName = expo?.version;
+  const versionCode = expo?.android?.versionCode;
+  if (
+    typeof packageName !== 'string' ||
+    typeof expectedVersionName !== 'string' ||
+    !Number.isInteger(versionCode) ||
+    versionCode < 1
+  ) {
+    fail(
+      'app.json has an incomplete Android release identity; expected ' +
+        'expo.version, expo.android.package, and a positive integer expo.android.versionCode.',
+    );
+  }
+
+  return {
+    packageName,
+    expectedVersionName,
+    expectedVersionCode: String(versionCode),
+  };
 }
 
 function run(command, args, options = {}) {
@@ -60,7 +102,8 @@ function findSdkTool(sdkPath, toolName) {
   if (fs.existsSync(buildToolsDir)) {
     const versions = fs
       .readdirSync(buildToolsDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      // Nix's composed SDK exposes version directories as symlinks.
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
       .map((entry) => entry.name)
       .sort()
       .reverse();
@@ -77,28 +120,74 @@ function findSdkTool(sdkPath, toolName) {
   return fromPath || null;
 }
 
+function findSdkCandidates() {
+  const candidates = [
+    process.env.ANDROID_HOME,
+    process.env.ANDROID_SDK_ROOT,
+    '/opt/android-sdk',
+    '/usr/lib/android-sdk',
+    path.join(process.env.HOME || '', 'Android', 'Sdk'),
+  ].filter(Boolean);
+
+  for (const toolName of ['sdkmanager', 'aapt', 'zipalign', 'apksigner', 'adb']) {
+    const toolPath = spawnSync('sh', ['-c', `command -v ${toolName}`], {
+      encoding: 'utf8',
+    }).stdout?.trim();
+    if (!toolPath) continue;
+
+    let toolDir = path.dirname(toolPath);
+    for (let depth = 0; depth < 5; depth += 1) {
+      candidates.push(toolDir);
+      toolDir = path.dirname(toolDir);
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+function isAndroidSdk(sdkPath) {
+  return (
+    fs.existsSync(path.join(sdkPath, 'platform-tools', 'adb')) ||
+    fs.existsSync(path.join(sdkPath, 'build-tools')) ||
+    fs.existsSync(path.join(sdkPath, 'cmdline-tools'))
+  );
+}
+
+function findNdkPath(sdkPath) {
+  const configuredNdk = process.env.ANDROID_NDK_HOME;
+  if (configuredNdk) return configuredNdk;
+
+  const expectedPath = path.join(sdkPath, 'ndk', expectedNdkVersion);
+  if (fs.existsSync(expectedPath)) return expectedPath;
+
+  return '';
+}
+
 function resolveAndroidEnvironment() {
-  const sdkPath =
-    process.env.ANDROID_HOME ||
-    process.env.ANDROID_SDK_ROOT ||
-    (fs.existsSync(documentedSdkPath) ? documentedSdkPath : '');
+  const sdkPath = findSdkCandidates().find(isAndroidSdk) || '';
 
   if (!sdkPath || !fs.existsSync(sdkPath)) {
     fail(
       'Android SDK not found. Set ANDROID_HOME or ANDROID_SDK_ROOT to an installed SDK ' +
-        `before running this check (the documented default was ${documentedSdkPath}).`,
+        'before running this check. Replit workspaces should provide ' +
+        'androidenv.androidPkgs.androidsdk or an SDK at /opt/android-sdk.',
     );
   }
 
-  const configuredNdk = process.env.ANDROID_NDK_HOME;
-  const documentedNdk = path.join(sdkPath, 'ndk', '27.1.12297006');
-  const ndkPath =
-    configuredNdk || (fs.existsSync(documentedNdk) ? documentedNdk : '');
+  const ndkPath = findNdkPath(sdkPath);
 
   if (!ndkPath || !fs.existsSync(ndkPath)) {
     fail(
-      'Android NDK 27.1.12297006 not found. Set ANDROID_NDK_HOME to that installed ' +
+      `Android NDK ${expectedNdkVersion} not found. Set ANDROID_NDK_HOME to that installed ` +
         'NDK before running the constrained arm64 build.',
+    );
+  }
+
+  const platformJar = path.join(sdkPath, 'platforms', expectedPlatform, 'android.jar');
+  if (!fs.existsSync(platformJar)) {
+    fail(
+      `Android platform ${expectedPlatform} not found at ${platformJar}. ` +
+        `Install the ${expectedPlatform} SDK platform before running the constrained arm64 build.`,
     );
   }
 
@@ -126,6 +215,7 @@ function resolveAndroidEnvironment() {
   return {
     sdkPath,
     ndkPath,
+    platform: expectedPlatform,
     tools,
     env: {
       ...process.env,
@@ -137,11 +227,35 @@ function resolveAndroidEnvironment() {
   };
 }
 
+function printPreflight(androidEnvironment) {
+  console.log('Android alpha preflight passed:');
+  console.log(`  SDK: ${androidEnvironment.sdkPath}`);
+  console.log(`  platform: ${androidEnvironment.platform}`);
+  console.log(`  NDK: ${androidEnvironment.ndkPath}`);
+  console.log(
+    `  build tools: ${Object.entries(androidEnvironment.tools)
+      .map(([name, toolPath]) => `${name}=${toolPath}`)
+      .join(', ')}`,
+  );
+}
+
 function buildApk(androidEnvironment) {
   console.log('Building arm64 release APK with the documented constrained flags...');
-  run('pnpm', ['exec', 'expo', 'prebuild', '--platform', 'android'], {
-    env: androidEnvironment.env,
-  });
+  const packageJsonPath = path.join(projectDir, 'package.json');
+  const originalPackageJson = fs.readFileSync(packageJsonPath);
+  const restorePackageJson = () => {
+    fs.writeFileSync(packageJsonPath, originalPackageJson);
+  };
+  process.once('exit', restorePackageJson);
+  run(
+    'pnpm',
+    ['exec', 'expo', 'prebuild', '--platform', 'android', '--no-install'],
+    {
+      env: androidEnvironment.env,
+    },
+  );
+  restorePackageJson();
+  process.removeListener('exit', restorePackageJson);
   run(
     './gradlew',
     [
@@ -163,6 +277,11 @@ function buildApk(androidEnvironment) {
 }
 
 function checkApk(apkPath, androidEnvironment) {
+  const {
+    packageName,
+    expectedVersionName,
+    expectedVersionCode,
+  } = readReleaseIdentity();
   if (!fs.existsSync(apkPath)) {
     fail(
       `APK is missing at ${apkPath}. The arm64 Gradle build did not produce ` +
@@ -183,6 +302,24 @@ function checkApk(apkPath, androidEnvironment) {
     );
   }
   console.log(`  package: ${packageName}`);
+
+  const declaredVersionCode = badging.match(/versionCode='([^']+)'/)?.[1];
+  if (declaredVersionCode !== expectedVersionCode) {
+    fail(
+      `Android version code is ${declaredVersionCode || 'missing'}; expected ` +
+        `${expectedVersionCode} for ${expectedVersionName}.`,
+    );
+  }
+  console.log(`  version code: ${expectedVersionCode}`);
+
+  const declaredVersionName = badging.match(/versionName='([^']+)'/)?.[1];
+  if (declaredVersionName !== expectedVersionName) {
+    fail(
+      `Android version name is ${declaredVersionName || 'missing'}; expected ` +
+        `${expectedVersionName}.`,
+    );
+  }
+  console.log(`  version name: ${expectedVersionName}`);
 
   const permissions = run(
     androidEnvironment.tools.aapt,
@@ -223,6 +360,30 @@ function checkApk(apkPath, androidEnvironment) {
     console.log(`  native module: ${requiredEntry}`);
   }
 
+  const dexEntries = entries.filter((entry) => /^classes\d*\.dex$/.test(entry));
+  if (dexEntries.length === 0) {
+    fail('APK contains no DEX files; the native application artifact is invalid.');
+  }
+  for (const requiredClass of requiredNativeClassFragments) {
+    const found = dexEntries.some((entry) => {
+      const result = spawnSync('unzip', ['-p', apkPath, entry], {
+        maxBuffer: maxDexBytes,
+      });
+      return (
+        result.status === 0 &&
+        Buffer.isBuffer(result.stdout) &&
+        result.stdout.includes(Buffer.from(requiredClass.fragment))
+      );
+    });
+    if (!found) {
+      fail(
+        `required ${requiredClass.label} is absent from the APK. ` +
+          'Check Expo autolinking and regenerate the native project.',
+      );
+    }
+    console.log(`  native module: ${requiredClass.label}`);
+  }
+
   run(
     androidEnvironment.tools.zipalign,
     ['-c', '-P', '4', '-v', '4', apkPath],
@@ -239,20 +400,39 @@ function checkApk(apkPath, androidEnvironment) {
   console.log('APK validation passed.');
 }
 
-const apkPath = path.resolve(
-  projectDir,
-  process.env.APK_PATH || path.relative(projectDir, defaultApkPath),
-);
-
-if (process.env.SKIP_BUILD === '1' && !fs.existsSync(apkPath)) {
-  fail(
-    `APK is missing at ${apkPath}. Set APK_PATH to a delivery APK or run without ` +
-      'SKIP_BUILD to build the arm64 debug APK first.',
+function main() {
+  const apkPath = path.resolve(
+    projectDir,
+    process.env.APK_PATH || path.relative(projectDir, defaultApkPath),
   );
+
+  if (process.env.SKIP_BUILD === '1' && !fs.existsSync(apkPath)) {
+    fail(
+      `APK is missing at ${apkPath}. Set APK_PATH to a delivery APK or run without ` +
+        'SKIP_BUILD to build the arm64 release APK first.',
+    );
+  }
+
+  const androidEnvironment = resolveAndroidEnvironment();
+  if (process.env.ANDROID_PREFLIGHT_ONLY === '1') {
+    printPreflight(androidEnvironment);
+    return;
+  }
+  if (process.env.SKIP_BUILD !== '1') {
+    buildApk(androidEnvironment);
+  }
+  checkApk(apkPath, androidEnvironment);
 }
 
-const androidEnvironment = resolveAndroidEnvironment();
-if (process.env.SKIP_BUILD !== '1') {
-  buildApk(androidEnvironment);
+if (require.main === module) {
+  main();
 }
-checkApk(apkPath, androidEnvironment);
+
+module.exports = {
+  expectedNdkVersion,
+  expectedPlatform,
+  findSdkTool,
+  readReleaseIdentity,
+  findSdkCandidates,
+  isAndroidSdk,
+};

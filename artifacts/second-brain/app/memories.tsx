@@ -15,6 +15,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import {
+  getConflictingMemoryAliasKeys,
+  getConflictingMemoryOwners,
+  memoryFingerprint,
+} from '@/lib/memory';
 
 export default function MemoriesScreen() {
   const router = useRouter();
@@ -23,6 +28,7 @@ export default function MemoriesScreen() {
     memories,
     storageProtection,
     updateMemory,
+    updateMemoryAliases,
     archiveMemory,
     deleteMemory,
     storageError,
@@ -31,8 +37,13 @@ export default function MemoriesScreen() {
   const [query, setQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [aliasDrafts, setAliasDrafts] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [isMutating, setIsMutating] = useState(false);
+  const conflictingAliasKeys = useMemo(
+    () => getConflictingMemoryAliasKeys(memories),
+    [memories],
+  );
 
   async function runMutation(operation: () => Promise<void>, onSuccess: () => void) {
     if (isMutating) return;
@@ -53,6 +64,9 @@ export default function MemoriesScreen() {
     return memories.filter(
       (memory) =>
         memory.content.toLocaleLowerCase().includes(normalized) ||
+        (memory.aliases ?? []).some((alias) =>
+          alias.toLocaleLowerCase().includes(normalized),
+        ) ||
         memory.category.includes(normalized) ||
         memory.source.excerpt.toLocaleLowerCase().includes(normalized),
     );
@@ -61,6 +75,30 @@ export default function MemoriesScreen() {
   function beginEdit(id: string, content: string) {
     setEditingId(id);
     setEditingText(content);
+  }
+
+  function setAliasDraft(id: string, value: string) {
+    setAliasDrafts((current) => ({ ...current, [id]: value }));
+  }
+
+  function addAlias(memory: (typeof memories)[number]) {
+    const draft = aliasDrafts[memory.id]?.trim();
+    if (!draft) return;
+    void runMutation(
+      () => updateMemoryAliases(memory.id, [...(memory.aliases ?? []), draft]),
+      () => setAliasDrafts((current) => ({ ...current, [memory.id]: '' })),
+    );
+  }
+
+  function removeAlias(memory: (typeof memories)[number], alias: string) {
+    void runMutation(
+      () =>
+        updateMemoryAliases(
+          memory.id,
+          (memory.aliases ?? []).filter((item) => item !== alias),
+        ),
+      () => undefined,
+    );
   }
 
   return (
@@ -225,6 +263,127 @@ export default function MemoriesScreen() {
                   {memory.content}
                 </Text>
               )}
+              <View style={styles.aliasSection}>
+                <Text style={[styles.aliasLabel, { color: colors.mutedForeground }]}>
+                  Known as
+                </Text>
+                {((memory.aliases ?? []).some((alias) =>
+                  conflictingAliasKeys.has(memoryFingerprint(alias)) &&
+                  getConflictingMemoryOwners(memories, memory.id, alias).length > 0,
+                )) && (
+                  <View
+                    style={[
+                      styles.aliasWarning,
+                      { backgroundColor: colors.secondary },
+                    ]}
+                  >
+                    <Feather name="alert-circle" size={13} color={colors.destructive} />
+                    <Text style={[styles.aliasWarningText, { color: colors.foreground }]}>
+                      A name below is shared with another active memory, so Demi will
+                      not use it until you remove or change the duplicate.
+                    </Text>
+                  </View>
+                )}
+                {(memory.aliases ?? []).map((alias) => {
+                  const conflictingOwners = getConflictingMemoryOwners(
+                    memories,
+                    memory.id,
+                    alias,
+                  );
+                  if (conflictingOwners.length === 0) return null;
+
+                  return (
+                    <View key={`conflict-${alias}`} style={styles.aliasConflictGroup}>
+                      <Text style={[styles.aliasConflictLabel, { color: colors.mutedForeground }]}>
+                        “{alias}” is also used by
+                      </Text>
+                      <View style={styles.aliasConflictList}>
+                        {conflictingOwners.map((owner) => (
+                          <Pressable
+                            key={owner.id}
+                            testID={`conflicting-memory-${memory.id}-${owner.id}`}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Edit memory ${owner.content}`}
+                            onPress={() => beginEdit(owner.id, owner.content)}
+                            style={[
+                              styles.aliasConflictCard,
+                              {
+                                backgroundColor: colors.secondary,
+                                borderColor: colors.border,
+                              },
+                            ]}
+                          >
+                            <View style={styles.aliasConflictCopy}>
+                              <Text style={[styles.aliasConflictCategory, { color: colors.primary }]}>
+                                {owner.category.toUpperCase()}
+                              </Text>
+                              <Text
+                                numberOfLines={2}
+                                style={[styles.aliasConflictText, { color: colors.foreground }]}
+                              >
+                                {owner.content}
+                              </Text>
+                            </View>
+                            <Feather name="edit-2" size={14} color={colors.mutedForeground} />
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })}
+                {(memory.aliases ?? []).length > 0 && (
+                  <View style={styles.aliasList}>
+                    {(memory.aliases ?? []).map((alias) => (
+                      <View
+                        key={alias}
+                        style={[styles.aliasChip, { backgroundColor: colors.secondary }]}
+                      >
+                        <Text style={[styles.aliasText, { color: colors.foreground }]}>
+                          {alias}
+                        </Text>
+                        <Pressable
+                          testID={`remove-memory-alias-${memory.id}-${alias}`}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove alias ${alias}`}
+                          onPress={() => removeAlias(memory, alias)}
+                          disabled={isMutating}
+                        >
+                          <Feather name="x" size={12} color={colors.mutedForeground} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <View style={styles.aliasInputRow}>
+                  <TextInput
+                    testID={`alias-input-${memory.id}`}
+                    value={aliasDrafts[memory.id] ?? ''}
+                    onChangeText={(value) => setAliasDraft(memory.id, value)}
+                    placeholder="Add a name or shorthand"
+                    placeholderTextColor={colors.mutedForeground}
+                    maxLength={48}
+                    style={[
+                      styles.aliasInput,
+                      {
+                        color: colors.cardForeground,
+                        borderColor: colors.border,
+                        backgroundColor: colors.background,
+                      },
+                    ]}
+                  />
+                  <Pressable
+                    testID={`add-memory-alias-${memory.id}`}
+                    accessibilityRole="button"
+                    onPress={() => addAlias(memory)}
+                    disabled={isMutating || !(aliasDrafts[memory.id] ?? '').trim()}
+                    style={[styles.aliasAddButton, { backgroundColor: colors.secondary }]}
+                  >
+                    <Text style={[styles.aliasAddText, { color: colors.primary }]}>
+                      Add
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
               <Text style={[styles.source, { color: colors.mutedForeground }]}>
                 From: “{memory.source.excerpt}”
               </Text>
@@ -357,6 +516,78 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     marginTop: 9,
   },
+  aliasSection: { marginTop: 12, gap: 7 },
+  aliasLabel: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 10 },
+  aliasWarning: {
+    padding: 9,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+  },
+  aliasWarningText: {
+    flex: 1,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  aliasConflictGroup: { gap: 5 },
+  aliasConflictLabel: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  aliasConflictList: { gap: 6 },
+  aliasConflictCard: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  aliasConflictCopy: { flex: 1, gap: 2 },
+  aliasConflictCategory: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 8,
+    letterSpacing: 0.8,
+  },
+  aliasConflictText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  aliasList: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  aliasChip: {
+    minHeight: 26,
+    borderRadius: 9,
+    paddingLeft: 9,
+    paddingRight: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  aliasText: { fontFamily: 'Inter_400Regular', fontSize: 11 },
+  aliasInputRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  aliasInput: {
+    flex: 1,
+    minHeight: 36,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 9,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+  },
+  aliasAddButton: {
+    minHeight: 36,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aliasAddText: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 11 },
   editInput: {
     minHeight: 62,
     borderWidth: 1,

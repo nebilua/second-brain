@@ -2,11 +2,12 @@ import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -18,12 +19,19 @@ import {
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PersonalProfileEditor } from '@/components/PersonalProfileEditor';
-import { useApp, type ConversationTurn } from '@/context/AppContext';
+import { useApp, useChat, type Appearance, type ConversationTurn } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { isCapabilityActive } from '@/lib/privacyCapabilities';
+import { recordRuntimeEvent } from '@/lib/runtimeDiagnostics';
 
-function MessageBubble({ item }: { item: ConversationTurn }) {
-  const { settings } = useApp();
-  const colors = useColors(settings.appearance);
+const MessageBubble = React.memo(function MessageBubble({
+  item,
+  appearance,
+}: {
+  item: ConversationTurn;
+  appearance: Appearance;
+}) {
+  const colors = useColors(appearance);
   const isUser = item.role === 'user';
 
   return (
@@ -47,7 +55,9 @@ function MessageBubble({ item }: { item: ConversationTurn }) {
       </View>
     </View>
   );
-}
+}, (previous, next) =>
+  previous.item === next.item && previous.appearance === next.appearance
+);
 
 export default function DemiScreen() {
   const router = useRouter();
@@ -55,10 +65,9 @@ export default function DemiScreen() {
   const {
     settings,
     settingsReady,
+    privacyReady,
+    privacyState,
     profile,
-    turns,
-    isConversationReady,
-    isThinking,
     localModel,
     engineStatus,
     modelSetupStatus,
@@ -70,38 +79,62 @@ export default function DemiScreen() {
     cancelVoiceInput,
     clearVoiceTranscript,
     stopSpeaking,
-    sendMessage,
     storageError,
+    cloudFallbackActivity,
     voiceError,
   } = useApp();
+  const {
+    turns,
+    isConversationReady,
+    isThinking,
+    sendMessage,
+    pendingMemoryCandidate,
+    saveMemoryCandidate,
+    rejectMemoryCandidate,
+  } = useChat();
   const colors = useColors(settings.appearance);
   const [draft, setDraft] = useState('');
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [wasStopped, setWasStopped] = useState(false);
-  const sendingVoiceRef = useRef(false);
+  const [memoryDraft, setMemoryDraft] = useState('');
+  const [memorySaveError, setMemorySaveError] = useState<string | null>(null);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
 
   const isListening = voiceInputStatus === 'listening';
   const isProcessingVoice = voiceInputStatus === 'checking' || voiceInputStatus === 'processing';
 
+  recordRuntimeEvent('chat.render', { turnCount: turns.length });
   const visibleTurns = useMemo(() => [...turns].reverse(), [turns]);
-  const canSend = draft.trim().length > 0 && !isThinking && isConversationReady && engineStatus === 'ready';
+  const cloudFallbackEnabled =
+    privacyReady &&
+    isCapabilityActive(privacyState, 'network.remote-inference');
+  const canSend =
+    draft.trim().length > 0 &&
+    !isThinking &&
+    isConversationReady &&
+    (engineStatus === 'ready' || cloudFallbackEnabled);
 
   useEffect(() => {
     if (!voiceTranscript) return;
     setDraft(voiceTranscript);
+    setShowKeyboard(true);
+    setWasStopped(false);
     clearVoiceTranscript();
   }, [clearVoiceTranscript, voiceTranscript]);
+
+  useEffect(() => {
+    if (pendingMemoryCandidate?.kind === 'memory') {
+      setMemoryDraft(pendingMemoryCandidate.content);
+      setMemorySaveError(null);
+    }
+  }, [pendingMemoryCandidate]);
 
   async function handleSend() {
     if (!canSend) return;
     const message = draft.trim();
     setDraft('');
     setShowKeyboard(false);
-    try {
-      await sendMessage(message);
-    } finally {
-      sendingVoiceRef.current = false;
-    }
+    await sendMessage(message);
   }
 
   // Setup text for the single prompt
@@ -131,19 +164,17 @@ export default function DemiScreen() {
     }
     if (isListening || isProcessingVoice) {
       setWasStopped(true);
-      stopVoiceInput();
+      if (isProcessingVoice) {
+        cancelVoiceInput();
+      } else {
+        stopVoiceInput();
+      }
       return;
     }
     setWasStopped(false);
+    setDraft('');
     void startVoiceInput();
   }
-
-  useEffect(() => {
-    if (voiceInputStatus === 'idle' && draft.trim().length > 0 && !isThinking && isConversationReady && engineStatus === 'ready' && !showKeyboard && !sendingVoiceRef.current) {
-      sendingVoiceRef.current = true;
-      void handleSend();
-    }
-  }, [voiceInputStatus, draft, isThinking, isConversationReady, engineStatus, showKeyboard]);
 
   const circleSize = Math.max(
     132,
@@ -155,7 +186,10 @@ export default function DemiScreen() {
     <KeyboardAvoidingView
       behavior="padding"
       keyboardVerticalOffset={0}
-      style={[styles.screen, { backgroundColor: colors.background }]}
+      style={[
+        styles.screen,
+        { minHeight: height, minWidth: width, backgroundColor: colors.background },
+      ]}
     >
       <StatusBar style={colors.isDark ? 'light' : 'dark'} />
       <SafeAreaView
@@ -171,6 +205,14 @@ export default function DemiScreen() {
               style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
             >
               <Feather name="calendar" size={20} color={colors.foreground} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open scheduled work"
+              onPress={() => router.push('/scheduled' as never)}
+              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            >
+              <Feather name="clock" size={20} color={colors.foreground} />
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -195,7 +237,9 @@ export default function DemiScreen() {
                 data={visibleTurns}
                 inverted
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => <MessageBubble item={item} />}
+                 renderItem={({ item }) => (
+                   <MessageBubble item={item} appearance={settings.appearance} />
+                 )}
                 contentContainerStyle={styles.messageList}
                 showsVerticalScrollIndicator={false}
                 keyboardDismissMode="interactive"
@@ -209,8 +253,10 @@ export default function DemiScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={
                   isListening ? "Stop listening" :
+                  isProcessingVoice ? "Cancel transcription" :
                   isSpeaking ? "Stop speaking" :
                   isThinking ? "Thinking" :
+                  draft ? "Review dictation draft" :
                   setupNeeded ? "Open settings for setup" : "Start voice input"
                 }
                 onPress={handleVoiceInput}
@@ -237,9 +283,17 @@ export default function DemiScreen() {
                 )}
               </Pressable>
 
-              <Text style={[styles.statusText, { color: colors.mutedForeground }]}>
-                {voiceError && !isListening ? 'Voice error' : isListening ? 'Listening' : isProcessingVoice ? 'Transcribing' : isThinking ? 'Thinking' : isSpeaking ? 'Speaking' : wasStopped ? 'Stopped' : draft ? 'Draft ready' : setupNeeded ? 'Setup needed' : 'Tap to speak'}
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[styles.statusText, { color: colors.mutedForeground }]}
+              >
+                {voiceError && !isListening ? 'Voice error' : isListening ? 'Listening' : isProcessingVoice ? 'Transcribing' : isThinking ? 'Thinking' : isSpeaking ? 'Speaking' : draft ? 'Draft ready — review before sending' : wasStopped ? 'Dictation canceled' : setupNeeded ? 'Setup needed' : 'Tap to speak'}
               </Text>
+              {cloudFallbackActivity && (
+                <Text style={[styles.setupText, { color: colors.mutedForeground }]}>
+                  {cloudFallbackActivity.message}
+                </Text>
+              )}
 
               {setupNeeded && !isListening && !isThinking && (
                 <Pressable
@@ -262,6 +316,8 @@ export default function DemiScreen() {
         {showKeyboard ? (
           <View style={[styles.composer, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close message composer"
               onPress={() => setShowKeyboard(false)}
               style={({ pressed }) => [styles.closeKeyboardButton, pressed && styles.pressed]}
             >
@@ -269,13 +325,14 @@ export default function DemiScreen() {
             </Pressable>
             <TextInput
               testID="chat-input"
+              accessibilityLabel="Message draft"
               value={draft}
               onChangeText={setDraft}
               placeholder="Type to Demi..."
               placeholderTextColor={colors.mutedForeground}
               multiline
               maxLength={1200}
-              editable={isConversationReady && engineStatus === 'ready'}
+              editable={isConversationReady && (engineStatus === 'ready' || cloudFallbackEnabled)}
               style={[styles.input, { color: colors.cardForeground }]}
               onSubmitEditing={Platform.OS === 'web' ? handleSend : undefined}
               blurOnSubmit={false}
@@ -283,6 +340,7 @@ export default function DemiScreen() {
             />
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel="Send message"
               onPress={handleSend}
               disabled={!canSend}
               style={({ pressed }) => [
@@ -301,6 +359,9 @@ export default function DemiScreen() {
         ) : (
           <View style={styles.bottomBar}>
              <Pressable
+              testID="keyboard-toggle"
+              accessibilityRole="button"
+              accessibilityLabel="Open message composer"
               onPress={() => setShowKeyboard(true)}
               style={({ pressed }) => [styles.keyboardToggle, pressed && styles.pressed]}
              >
@@ -313,6 +374,116 @@ export default function DemiScreen() {
         visible={settingsReady && !profile.onboardingCompleted}
         mode="onboarding"
       />
+      <Modal
+        visible={pendingMemoryCandidate !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={rejectMemoryCandidate}
+      >
+        <View style={styles.candidateBackdrop}>
+          <View style={[styles.candidateCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.candidateEyebrow, { color: colors.primary }]}>
+              {pendingMemoryCandidate?.kind === 'important-date'
+                ? 'IMPORTANT DATE FOUND'
+                : 'MEMORY SUGGESTION'}
+            </Text>
+            <Text style={[styles.candidateTitle, { color: colors.cardForeground }]}>
+              {pendingMemoryCandidate?.kind === 'important-date'
+                ? 'Keep this date close?'
+                : 'Save this for future replies?'}
+            </Text>
+            {pendingMemoryCandidate?.kind === 'memory' ? (
+              <>
+                <TextInput
+                  testID="memory-candidate-editor"
+                  value={memoryDraft}
+                  onChangeText={setMemoryDraft}
+                  multiline
+                  maxLength={240}
+                  style={[
+                    styles.candidateInput,
+                    { color: colors.cardForeground, backgroundColor: colors.background, borderColor: colors.border },
+                  ]}
+                />
+                <Text style={[styles.candidateMeta, { color: colors.mutedForeground }]}>
+                  {pendingMemoryCandidate.category.toUpperCase()} · From “{pendingMemoryCandidate.sourceExcerpt}”
+                </Text>
+                <View style={styles.candidateActions}>
+                  <Pressable onPress={rejectMemoryCandidate} disabled={isSavingMemory}>
+                    <Text style={[styles.candidateActionText, { color: colors.mutedForeground }]}>Not now</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="save-memory-candidate"
+                    onPress={async () => {
+                      setIsSavingMemory(true);
+                      setMemorySaveError(null);
+                      try {
+                        await saveMemoryCandidate(memoryDraft);
+                      } catch (error) {
+                        setMemorySaveError(
+                          error instanceof Error
+                            ? error.message
+                            : 'This memory could not be saved. Try again.',
+                        );
+                      } finally {
+                        setIsSavingMemory(false);
+                      }
+                    }}
+                    disabled={isSavingMemory || !memoryDraft.trim()}
+                  >
+                    <Text style={[styles.candidateActionText, { color: colors.primary }]}>
+                      {isSavingMemory ? 'Saving…' : 'Save memory'}
+                    </Text>
+                  </Pressable>
+                </View>
+                {memorySaveError && (
+                  <Text style={[styles.candidateError, { color: colors.destructive }]}>
+                    {memorySaveError}
+                  </Text>
+                )}
+              </>
+            ) : pendingMemoryCandidate?.kind === 'important-date' ? (
+              <>
+                <Text style={[styles.candidateDate, { color: colors.cardForeground }]}>
+                  {pendingMemoryCandidate.eventName} · {pendingMemoryCandidate.label}
+                </Text>
+                <Text style={[styles.candidateMeta, { color: colors.mutedForeground }]}>
+                  {pendingMemoryCandidate.date}
+                  {pendingMemoryCandidate.time ? ` · ${pendingMemoryCandidate.time}` : ''}
+                  {pendingMemoryCandidate.notes ? ` · ${pendingMemoryCandidate.notes}` : ''}
+                </Text>
+                <Text style={[styles.candidateSource, { color: colors.mutedForeground }]}>
+                  From “{pendingMemoryCandidate.sourceExcerpt}”. Nothing is saved until you confirm it in the calendar editor.
+                </Text>
+                <View style={styles.candidateActions}>
+                  <Pressable onPress={rejectMemoryCandidate}>
+                    <Text style={[styles.candidateActionText, { color: colors.mutedForeground }]}>Dismiss</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="review-date-candidate"
+                    onPress={() => {
+                      const candidate = pendingMemoryCandidate;
+                      rejectMemoryCandidate();
+                      router.push({
+                        pathname: '/calendar/edit',
+                        params: {
+                          label: candidate.label,
+                          eventName: candidate.eventName,
+                          date: candidate.date,
+                          time: candidate.time ?? '',
+                          notes: candidate.notes,
+                        },
+                      });
+                    }}
+                  >
+                    <Text style={[styles.candidateActionText, { color: colors.primary }]}>Review date</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -458,4 +629,27 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.6 },
   pressed: { opacity: 0.7 },
   pressedCircle: { transform: [{ scale: 0.94 }] },
+  candidateBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 22,
+  },
+  candidateCard: {
+    width: '100%',
+    maxWidth: 440,
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 20,
+  },
+  candidateEyebrow: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 10, letterSpacing: 1.1 },
+  candidateTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 22, marginTop: 8 },
+  candidateInput: { minHeight: 72, borderWidth: 1, borderRadius: 12, padding: 11, marginTop: 16, fontFamily: 'Inter_400Regular', fontSize: 14 },
+  candidateDate: { fontFamily: 'Inter_500Medium', fontSize: 15, marginTop: 16 },
+  candidateMeta: { fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16, marginTop: 9 },
+  candidateError: { fontFamily: 'Inter_500Medium', fontSize: 11, lineHeight: 16, marginTop: 10 },
+  candidateSource: { fontFamily: 'Inter_400Regular', fontSize: 12, lineHeight: 18, marginTop: 14 },
+  candidateActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 20, marginTop: 20 },
+  candidateActionText: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 13, padding: 5 },
 });

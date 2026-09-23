@@ -6,6 +6,10 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { AppProvider } from '@/context/AppContext';
 import { CalendarProvider } from '@/context/CalendarContext';
+import { ToolProvider } from '@/context/ToolContext';
+import { ResearchProvider } from '@/context/ResearchContext';
+import { ScheduledJobsProvider } from '@/context/ScheduledJobsContext';
+import { LocalDataTransferProvider } from '@/context/LocalDataTransferContext';
 import {
   SpaceGrotesk_400Regular,
   SpaceGrotesk_500Medium,
@@ -35,6 +39,10 @@ function RootLayoutNav() {
         options={{ headerShown: false, animation: 'slide_from_right' }}
       />
       <Stack.Screen
+        name="screen-access"
+        options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
         name="calendar/index"
         options={{ headerShown: false, animation: 'slide_from_right' }}
       />
@@ -45,6 +53,26 @@ function RootLayoutNav() {
       <Stack.Screen
         name="memories"
         options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="documents"
+        options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="code-actions"
+        options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="research"
+        options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="scheduled/index"
+        options={{ headerShown: false, animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="scheduled/edit"
+        options={{ headerShown: false, animation: 'slide_from_bottom' }}
       />
     </Stack>
   );
@@ -82,7 +110,15 @@ export default function RootLayout() {
             <KeyboardProvider>
               <AppProvider>
                 <CalendarProvider>
-                  <RootLayoutNav />
+                  <ToolProvider>
+                    <ResearchProvider>
+                      <ScheduledJobsProvider>
+                        <LocalDataTransferProvider>
+                          <RootLayoutNav />
+                        </LocalDataTransferProvider>
+                      </ScheduledJobsProvider>
+                    </ResearchProvider>
+                  </ToolProvider>
                 </CalendarProvider>
               </AppProvider>
             </KeyboardProvider>
