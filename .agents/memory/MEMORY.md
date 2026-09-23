@@ -1,0 +1,5 @@
+- [Cross-platform confirmations](cross-platform-confirmations.md) — use in-app destructive confirmations so native and Expo web execute the same callback.
+- [Offline voice privacy](offline-voice-privacy.md) — Android 13+ and a verified installed locale are required before private dictation can start.
+- [GitHub publication writes](github-publication-writes.md) — GitHub connector writes can trigger Cloudflare 403s after bursts and on HTML paths; verify the remote tree before resuming.
+- [Expo preview port conflicts](expo-preview-port-conflict.md) — a duplicate Expo process can pause the managed workflow at a port prompt and make the preview appear blank.
+- [llama.rn JSI initialization](llama-rn-jsi-install.md) — llama.rn 0.13 requires installJsi before initLlama or model loading fails at runtime.
